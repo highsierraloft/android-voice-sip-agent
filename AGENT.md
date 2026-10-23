@@ -1,5 +1,12 @@
 # AGENT.md
 
+## Fork boundary
+
+The app variant in this fork requires a pinned subscription for outgoing calls and
+leaves incoming calls with the normal dialer. Never fall back to the default SIM.
+Keep code, setup steps, verification status, and recovery documentation aligned.
+Machine-specific SIM identities and credentials belong outside the repository.
+
 This file provides guidance to coding agents (Claude Code etc.) when working with code in this repository.
 Machine-specific notes (devices, PBX hosts, current configuration) belong in the git-ignored `CLAUDE.local.md`.
 

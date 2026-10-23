@@ -38,12 +38,19 @@ class CellularEndpoint(
     private val logger: (String) -> Unit,
     private val main: Handler = Handler(Looper.getMainLooper()),
     internal val audioExecutor: Executor = CellularLeg.audioExecutor,
+    private val simPolicy: () -> SimPolicy? = { null },
+    private val simAccount: ((SimPolicy) -> android.telecom.PhoneAccountHandle)? = null,
 ) : CallEndpoint {
     override val name = "cellular"
 
     private val app = context.applicationContext
     private val telecom = app.getSystemService(TelecomManager::class.java)
     private val telephony = app.getSystemService(TelephonyManager::class.java)
+    private val simSelector by lazy { SimAccountSelector(app) }
+    private fun selectedAccount(policy: SimPolicy) = simAccount?.invoke(policy) ?: simSelector.resolve(policy)
+    fun simSelectionProblem(): String? = simPolicy()?.let { policy ->
+        runCatching { selectedAccount(policy); null }.getOrElse { "Selected SIM unavailable, changed, or not configured" }
+    }
     private val statusListeners = CopyOnWriteArrayList<EndpointStatusListener>()
     private val ids = AtomicInteger(1)
     @Volatile private var handler: IncomingCallHandler? = null
@@ -141,11 +148,21 @@ class CellularEndpoint(
             leg.failPlacement(HangupCause.BUSY)
             return
         }
+        val extras = Bundle()
+        val policy = simPolicy()
+        if (policy != null) {
+            val account = runCatching { selectedAccount(policy) }.getOrElse {
+                log("refusing placement: selected SIM unavailable or changed")
+                leg.failPlacement(HangupCause.UNAVAILABLE)
+                return
+            }
+            extras.putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, account)
+        }
         val p = Pending(leg, digits, SystemClock.elapsedRealtime())
         pending += p
         reportCalls()
         try {
-            telecom.placeCall(Uri.fromParts("tel", digits, null), Bundle())
+            telecom.placeCall(Uri.fromParts("tel", digits, null), extras)
             log("placeCall ${redactNumber(digits)} (leg ${leg.id})")
         } catch (e: SecurityException) {
             pending -= p
@@ -196,6 +213,11 @@ class CellularEndpoint(
                 match.leg.bind(call)
             }
             Call.Details.DIRECTION_INCOMING -> {
+                if (simPolicy()?.allowIncoming == false) {
+                    log("leaving incoming call to the phone app by SIM policy")
+                    reconcileCalls(); reportCalls()
+                    return
+                }
                 val h = handler
                 if (h == null || !status.ready || call.telecomState != Call.STATE_RINGING || legs.isNotEmpty() ||
                     pending.isNotEmpty() || hasForeignCall(except = call) || !isCellular(call) ||
@@ -272,6 +294,8 @@ class CellularEndpoint(
         if (details.hasProperty(Call.Details.PROPERTY_SELF_MANAGED) ||
             details.hasProperty(Call.Details.PROPERTY_IS_EXTERNAL_CALL)) return false
         val account = details.accountHandle ?: return false
+        val policy = simPolicy()
+        if (policy != null && !runCatching { selectedAccount(policy) == account }.getOrDefault(false)) return false
         // A managed VoIP ConnectionService can also appear in InCallService. Only SIM accounts
         // are eligible for the global modem tap, even if their handle uses the tel scheme.
         return runCatching { telecom.getPhoneAccount(account)?.hasCapabilities(

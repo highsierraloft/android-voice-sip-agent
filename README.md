@@ -1,5 +1,29 @@
 # Voice SIP Agent
 
+This fork adds explicit SIM selection for outbound calls and leaves incoming calls
+with the phone's usual dialer. It installs separately as
+`io.github.sparkcyf.voicesipagent.hermes` and starts with takeover off.
+Before enabling it, grant the phone permissions, inspect `sim-status`, and pin the
+intended slot and SIM country with `select-sim`. The saved subscription must still
+match when each call starts. There is no fallback to the phone's default SIM.
+
+```sh
+R=io.github.sparkcyf.voicesipagent.hermes/io.github.sparkcyf.voicesipagent.app.AdbControlReceiver
+adb shell am broadcast -n "$R" --es op sim-status
+# Example only: use the slot and country verified on your own phone.
+adb shell am broadcast -n "$R" --es op select-sim --ei slot 1 --es country es
+adb shell am broadcast -n "$R" --es op status
+```
+
+Check `sim_pinned=true` and the selected `sim_slot` in the returned state. A command
+acknowledgement alone does not prove selection succeeded. Removing or replacing the
+SIM blocks new calls until explicit reselection. This does not change Android's
+default calling SIM, either SIM's settings, or the default dialer.
+
+The fork's SIM policy passed unit tests and a read-only check on a Galaxy A33 5G.
+An outbound cellular call with this fork has not yet been verified. The upstream
+features and hardware reports below are separate evidence.
+
 [中文说明](README.zh.md)
 
 Turn an **unrooted** Android 11+ phone into a single-line **cellular ↔ SIP gateway**. The phone registers to your PBX

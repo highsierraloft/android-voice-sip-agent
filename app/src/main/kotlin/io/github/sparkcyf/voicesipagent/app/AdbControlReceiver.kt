@@ -65,9 +65,10 @@ class AdbControlReceiver : BroadcastReceiver() {
     /** Validate and capture extras before submitting anything; merge settings on the runtime worker. */
     private fun parseCommand(intent: Intent, op: String): (GatewayRuntime) -> (() -> String) {
         val allowed = when (op) {
-            "status", "setup", "sip-restart" -> emptySet()
+            "status", "sim-status", "setup", "sip-restart" -> emptySet()
             "loopback", "takeover", "earpiece-mute", "sip-debug" -> setOf("on")
             "sip-stack" -> setOf("stack")
+            "select-sim" -> setOf("slot", "country")
             "provision" -> setOf("server", "port", "transport", "srtp", "user", "password", "domain",
                 "target", "prefixes", "audio_method", "call_access", "hold_sip")
             else -> invalid("unknown op; see README adb control")
@@ -80,6 +81,18 @@ class AdbControlReceiver : BroadcastReceiver() {
                 rt::statusLine
             }
             "setup" -> { rt -> rt.runSetup(); rt::statusLine }
+            "sim-status" -> { rt -> rt::simStatusLine }
+            "select-sim" -> {
+                val slot = intent.argument<Int>("slot") ?: invalid("select-sim needs --ei slot 1|2")
+                val country = intent.argument<String>("country").orEmpty().lowercase()
+                if (slot !in 1..2 || !country.matches(Regex("[a-z]{2}")))
+                    invalid("select-sim needs --ei slot 1|2 --es country <two-letter SIM country>")
+                val action: (GatewayRuntime) -> (() -> String) = { rt ->
+                    rt.selectSim(slot, country)
+                    rt::settingsLine
+                }
+                action
+            }
             "sip-restart" -> { rt -> rt.restartSip(); rt::statusLine }
             "loopback", "takeover", "earpiece-mute", "sip-debug" -> {
                 val on = intent.argument<Boolean>("on") ?: true
