@@ -43,6 +43,9 @@ class CellularOwnershipTest {
     private var opened: Handle? = null
     private var lost: ((String) -> Unit)? = null
     private var originalMute = false
+    private var simPolicy: SimPolicy? = null
+    private val selectedSimAccount = mock(PhoneAccountHandle::class.java)
+    private var selectedSimMissing = false
 
     private class Handle(private val failClose: Boolean) : CallAudioHandle {
         override val port = mock(MediaPort::class.java)
@@ -68,7 +71,9 @@ class CellularOwnershipTest {
             if (earlyLoss) onLost("socket died during open")
             if (openFailure) error("mode not settled")
             Handle(failHandleClose).also { opened = it }
-        }, {}, main, Executor { audioTasks += it })
+        }, {}, main, Executor { audioTasks += it },
+            simPolicy = { simPolicy },
+            simAccount = { check(!selectedSimMissing); selectedSimAccount })
         endpoint.setReadiness(true, "ready")
         endpoint.setIncomingCallHandler { leg = it as CellularLeg }
         CellularEndpoint.attachService(service)
@@ -105,8 +110,119 @@ class CellularOwnershipTest {
     }
 
     private fun drainMain() { while (mainTasks.isNotEmpty()) mainTasks.removeFirst().run() }
-    private fun active() { endpoint.onCallAdded(service, call); state(call, Call.STATE_ACTIVE) }
+    private fun active() { endpoint.onCallAdded(service, call); leg.answer(); drainMain(); state(call, Call.STATE_ACTIVE) }
     private fun open() { audioTasks.removeFirst().run(); drainMain() }
+
+    @Test fun manualAnswerDuringSipPreparationReleasesOwnershipWithoutTappingOrHangingUp() {
+        endpoint.onCallAdded(service, call)
+        state(call, Call.STATE_ACTIVE)
+        assertEquals(LegState.ENDED, leg.state)
+        assertTrue(audioTasks.isEmpty())
+        verify(call, never()).answer(anyInt())
+        verify(call, never()).disconnect()
+        verify(call, never()).reject(anyBoolean(), any())
+        verify(service, never()).setMuted(anyBoolean())
+    }
+
+    @Test fun preAnswerFailureLeavesTheNativePhoneRinging() {
+        endpoint.onCallAdded(service, call)
+        leg.releaseUnanswered(HangupCause.UNAVAILABLE)
+        drainMain()
+        assertEquals(LegState.ENDED, leg.state)
+        verify(call, never()).answer(anyInt())
+        verify(call, never()).reject(anyBoolean(), any())
+        verify(call, never()).disconnect()
+        verify(service, never()).setMuted(anyBoolean())
+    }
+
+    @Test fun readinessLossBeforeAnswerLeavesTheNativePhoneRinging() {
+        endpoint.onCallAdded(service, call)
+        endpoint.setReadiness(false, "SIP unavailable")
+        drainMain()
+        assertEquals(LegState.ENDED, leg.state)
+        verify(call, never()).reject(anyBoolean(), any())
+        verify(call, never()).disconnect()
+    }
+
+    @Test fun aWaitingIncomingCallNeverInterruptsTheExistingConversation() {
+        active(); open()
+        val first = leg
+        val waiting = makeCall(Call.STATE_RINGING)
+        endpoint.onCallAdded(service, waiting)
+        drainMain()
+        assertEquals(LegState.CONNECTED, first.state)
+        assertEquals(0, opened!!.closes)
+        verify(call, never()).disconnect()
+        verify(waiting, never()).answer(anyInt())
+        verify(waiting, never()).reject(anyBoolean(), any())
+        verify(waiting, never()).disconnect()
+    }
+
+    @Test fun selectedOnlyInboundNeverTakesTheProtectedSim() {
+        simPolicy = SimPolicy(0, 42, "es", allowIncoming = true)
+        endpoint.onCallAdded(service, call)
+        state(call, Call.STATE_ACTIVE)
+        assertFalse(this::leg.isInitialized)
+        verify(call, never()).answer(anyInt())
+        verify(call, never()).reject(anyBoolean(), any())
+        verify(call, never()).disconnect()
+        verify(service, never()).setMuted(anyBoolean())
+    }
+
+    @Test fun selectedInboundAnswersOnlyAfterExplicitGatewayAcceptance() {
+        simPolicy = SimPolicy(0, 42, "es", allowIncoming = true)
+        val details = call.details
+        doReturn(selectedSimAccount).`when`(details).accountHandle
+        endpoint.onCallAdded(service, call)
+        verify(call, never()).answer(anyInt())
+        leg.answer(); drainMain()
+        verify(call).answer(anyInt())
+        state(call, Call.STATE_ACTIVE)
+        assertEquals(1, audioTasks.size)
+    }
+
+    @Test fun simPolicyLeavesIncomingCallsAndTheirAudioUntouched() {
+        simPolicy = SimPolicy(1, 42, "es", allowIncoming = false)
+        endpoint.onCallAdded(service, call)
+        state(call, Call.STATE_ACTIVE)
+        assertEquals(0, openCount)
+        verify(call, never()).answer(anyInt())
+        verify(call, never()).reject(anyBoolean(), any())
+        verify(call, never()).disconnect()
+        verify(service, never()).setMuted(anyBoolean())
+    }
+
+    @Test fun missingSelectedSimRefusesPlacementInsteadOfUsingDefault() {
+        simPolicy = SimPolicy(1, 42, "es")
+        selectedSimMissing = true
+        mockConstruction(Bundle::class.java).use {
+            val outgoing = endpoint.dial("+12025550123", Party(null))
+            drainMain()
+            assertEquals(LegState.ENDED, outgoing.state)
+            assertEquals(HangupCause.UNAVAILABLE, outgoing.endCause)
+            verify(telecom, never()).placeCall(any(Uri::class.java), any(Bundle::class.java))
+        }
+    }
+
+    @Test fun outgoingPlacementAlwaysCarriesTheSelectedSimAccount() {
+        simPolicy = SimPolicy(1, 42, "es")
+        mockStatic(SystemClock::class.java).use {
+            mockStatic(Uri::class.java).use { uris ->
+                mockConstruction(Bundle::class.java).use { bundles ->
+                    val number = "+12025550123"
+                    val uri = mock(Uri::class.java)
+                    uris.`when`<Uri> { Uri.fromParts("tel", number, null) }.thenReturn(uri)
+                    val outgoing = endpoint.dial(number, Party(null))
+                    drainMain()
+                    val extras = bundles.constructed().single()
+                    verify(extras).putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, selectedSimAccount)
+                    verify(telecom).placeCall(uri, extras)
+                    outgoing.hangup(HangupCause.CANCELLED)
+                    drainMain()
+                }
+            }
+        }
+    }
 
     @Test fun hangupCancelsQueuedOpenBeforeTelecomDisconnects() {
         active()

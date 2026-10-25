@@ -135,6 +135,8 @@ class GatewayRuntime private constructor(context: Context) {
     val cellular = CellularEndpoint(app,
         audioOpener,
         logger = { AppLog.i(it) },
+        simPolicy = { io.github.sparkcyf.voicesipagent.telephony.SimPolicy(
+            settings.simSlotIndex, settings.simSubscriptionId, settings.simCountryIso, allowIncoming = true) },
     )
     /** [SipUserAgent] or [PjsipEndpoint], per [GatewaySettings.sipStack]. */
     private var sip: CallEndpoint? = null
@@ -445,7 +447,7 @@ class GatewayRuntime private constructor(context: Context) {
             componentEnabled(GatewayDialerActivity::class.java, false) && componentEnabled(GatewayDialerService::class.java, true),
             componentEnabled(GatewayInCallService::class.java, true),
             p?.get(HealthKeys.MANAGE_ONGOING_CALLS) == true, p?.get(HealthKeys.COMPANION_OVERRIDE) == true,
-            listOf(Manifest.permission.CALL_PHONE, Manifest.permission.READ_PHONE_STATE).all {
+            listOf(Manifest.permission.CALL_PHONE, Manifest.permission.READ_PHONE_STATE, Manifest.permission.READ_PHONE_NUMBERS).all {
                 app.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED
             })
         val access = requirements.ready
@@ -454,6 +456,7 @@ class GatewayRuntime private constructor(context: Context) {
             AudioMethod.LEGACY -> p?.get(HealthKeys.DIRECT_AUDIO) == true
             else -> p?.get(HealthKeys.DIRECT_AUDIO) == true || p?.get(HealthKeys.REDIRECT_AUDIO) == true
         }
+        val simProblem = cellular.simSelectionProblem()
         val problem = when {
             h.dialerChangeRunning -> "Changing the default dialer"
             !gatewayEnabled -> "Gateway service not running"
@@ -461,6 +464,7 @@ class GatewayRuntime private constructor(context: Context) {
             h.shizuku != ShizukuConnector.State.CONNECTED -> shizukuProblem(h.shizuku)
             !access -> requirements.problem!!
             !audio -> "Selected call audio unavailable: ${h.privilegedDetail}"
+            simProblem != null -> simProblem
             else -> null
         }
         return CellularCheck(access, audio, requirements.problem, problem)
@@ -488,6 +492,7 @@ class GatewayRuntime private constructor(context: Context) {
             h.shizuku != ShizukuConnector.State.CONNECTED -> shizukuProblem(h.shizuku)
             !access -> c.accessProblem!!
             !audio -> "Selected call audio unavailable: ${h.privilegedDetail}"
+            c.problem != null -> c.problem
             !h.loopbackTest && !h.sip.ready -> "SIP unavailable: ${h.sip.detail}"
             else -> "Gateway ready"
         }
@@ -849,6 +854,7 @@ class GatewayRuntime private constructor(context: Context) {
                 cellularInboundTarget = inboundTarget,
                 busyPolicy = s.busyPolicy,
                 allowedDialPrefixes = s.allowedPrefixes.split(',').map { it.trim() }.filter { it.isNotEmpty() },
+                inboundMediaReadyDigit = if (loopback) null else 'D',
             ),
             dialPolicyForA = { n -> when {
                 !_health.value.cellularReady -> HangupCause.UNAVAILABLE
@@ -878,6 +884,16 @@ class GatewayRuntime private constructor(context: Context) {
     }
 
     // ------------------------------------------------------------ external controls
+
+    fun simStatusLine() = io.github.sparkcyf.voicesipagent.telephony.SimAccountSelector(app).statusLine()
+
+    /** Pin a subscription without changing Android's default SIM or subscription settings. */
+    fun selectSim(slotNumber: Int, countryIso: String) = worker.execute {
+        check(!hasActiveWork()) { "SIM selection requires an idle phone" }
+        val policy = io.github.sparkcyf.voicesipagent.telephony.SimAccountSelector(app).pin(slotNumber - 1, countryIso)
+        applySettingsNow(settings.copy(simSlotIndex = policy.slotIndex,
+            simSubscriptionId = policy.subscriptionId, simCountryIso = policy.countryIso))
+    }
 
     /** Evaluate edits on the worker against the latest queued settings, never an older UI snapshot. */
     fun applySettings(update: (GatewaySettings) -> GatewaySettings) = worker.execute {
@@ -1015,7 +1031,8 @@ class GatewayRuntime private constructor(context: Context) {
             " shizuku=${h.shizuku} audio_method=${settings.audioMethod}:${audioMethodName(settings.audioMethod)}" +
             " audioReady=${h.audioReady} tap=${if (audio.active) audio.backend else "idle"}" +
             " earpiece_mute=${onOff(settings.muteEarpiece)} loopback=${onOff(h.loopbackTest)}" +
-            " calls=${h.calls.summary}" + (if (h.settingsPending) " settingsPending" else "")
+            " calls=${h.calls.summary}" + (if (h.settingsPending) " settingsPending" else "") +
+            " sim_slot=${settings.simSlotIndex + 1} sim_pinned=${settings.simSubscriptionId >= 0} incoming=selected-only inbound_contract=2"
     }
 
     /** Saved or queued selections (not a verified audio route), never the password itself. */
@@ -1027,6 +1044,7 @@ class GatewayRuntime private constructor(context: Context) {
             " prefixes=${s.allowedPrefixes.ifEmpty { "(any)" }}" +
             " audio_method=${s.audioMethod}:${audioMethodName(s.audioMethod)} call_access=${s.callAccess}" +
             " earpiece_mute=${onOff(s.muteEarpiece)} hold_sip=${onOff(s.holdSipWhenNotReady)} sip_debug=${onOff(s.sipDebugLog)}" +
+            " sim_slot=${s.simSlotIndex + 1} sim_pinned=${s.simSubscriptionId >= 0} incoming=selected-only inbound_contract=2" +
             (if (pendingSettings != null) " (applies after current calls end)" else "")
     }
 

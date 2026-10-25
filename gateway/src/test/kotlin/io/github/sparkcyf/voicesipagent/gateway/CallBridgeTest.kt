@@ -63,11 +63,13 @@ class CallBridgeTest {
     }
 
     @Test
-    fun sipFailureRejectsCellular() {
+    fun sipFailureReleasesUnansweredCellularWithoutRejection() {
         val a = cell.incoming("13800001234")
         settle()
         sip.dialed.single().remoteEnded(HangupCause.BUSY); settle()
         assertEquals(HangupCause.BUSY, a.endCause)
+        assertEquals("release:BUSY", a.actions.last())
+        assertTrue(a.actions.none { it.startsWith("hangup:") })
     }
 
     @Test
@@ -148,7 +150,7 @@ class CallBridgeTest {
         bridge.stop(); build(GatewayConfig(busyPolicy = BusyPolicy.IGNORE))
         sip.incoming("302", target = "13800005678"); settle()
         val ignored = cell.incoming("13800009999"); settle()
-        assertEquals("native phone keeps it", LegState.PROCEEDING, ignored.state)
+        assertEquals("native phone keeps it", "release:BUSY", ignored.actions.last())
     }
 
     @Test
@@ -157,7 +159,22 @@ class CallBridgeTest {
         val a = cell.incoming("13800001234")
         Thread.sleep(150); settle()
         assertEquals(HangupCause.NO_ANSWER, a.endCause)
+        assertEquals("release:NO_ANSWER", a.actions.last())
         assertEquals(LegState.ENDED, sip.dialed.single().state)
+    }
+
+    @Test fun inboundReadinessMarkerWaitsForBothMediaPortsAndIsSentOnlyOnce() {
+        bridge.stop(); build(GatewayConfig(cellularInboundTarget = "302", inboundMediaReadyDigit = 'D'))
+        val incoming = cell.incoming("13800001234"); settle()
+        val outgoing = sip.dialed.single()
+        outgoing.remoteAnswered(); settle()
+        assertTrue(outgoing.dtmf.isEmpty())
+        incoming.mediaUp(FakePort(isClockSource = true, fill = 1)); settle()
+        assertTrue(outgoing.dtmf.isEmpty())
+        outgoing.mediaUp(FakePort(isClockSource = false, fill = 2)); settle()
+        assertEquals(listOf('D'), outgoing.dtmf)
+        outgoing.mediaUp(FakePort(isClockSource = false, fill = 3)); settle()
+        assertEquals(listOf('D'), outgoing.dtmf)
     }
 
     @Test

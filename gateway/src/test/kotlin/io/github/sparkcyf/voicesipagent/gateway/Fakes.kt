@@ -36,6 +36,12 @@ class FakeLeg(kind: String, dir: LegDirection, remote: Party, target: String?) :
     override fun ring() { actions += "ring"; transition(LegState.RINGING) }
     override fun answer() { actions += "answer"; if (autoConfirmAnswer) transition(LegState.CONNECTED) }
     override fun hangup(cause: HangupCause) { actions += "hangup:$cause"; transition(LegState.ENDED, cause) }
+    override fun releaseUnanswered(cause: HangupCause) {
+        if (kind == "cellular" && "answer" !in actions) {
+            actions += "release:$cause"
+            transition(LegState.ENDED, cause)
+        } else hangup(cause)
+    }
     override fun sendDtmf(digit: Char, durationMs: Int) { dtmf += digit }
 
     // Test drivers, simulating the remote side / network

@@ -22,6 +22,8 @@ data class GatewayConfig(
     val busyPolicy: BusyPolicy = BusyPolicy.REJECT,
     /** Outbound cellular numbers must start with one of these; empty means any. */
     val allowedDialPrefixes: List<String> = emptyList(),
+    /** Private PBX handshake, emitted only after incoming cellular audio is bridged. */
+    val inboundMediaReadyDigit: Char? = null,
 )
 
 /** Vetoes numbers we must never dial (emergency numbers etc.). Returns null if allowed. */

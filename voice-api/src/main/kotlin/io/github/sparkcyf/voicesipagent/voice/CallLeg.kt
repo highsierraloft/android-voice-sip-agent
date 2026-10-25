@@ -48,6 +48,9 @@ interface CallLeg {
 
     fun hangup(cause: HangupCause = HangupCause.NORMAL)
 
+    /** Withdraw gateway ownership before answer. Cellular implementations leave the native call alone. */
+    fun releaseUnanswered(cause: HangupCause = HangupCause.UNAVAILABLE) = hangup(cause)
+
     fun sendDtmf(digit: Char, durationMs: Int = DEFAULT_DTMF_MS)
 
     interface Listener {

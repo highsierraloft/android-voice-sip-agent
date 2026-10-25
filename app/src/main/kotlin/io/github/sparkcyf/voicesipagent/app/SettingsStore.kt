@@ -16,7 +16,10 @@ import javax.crypto.spec.GCMParameterSpec
 
 data class GatewaySettings(
     /** Master switch; call cleanup and default-dialer restoration may finish later. */
-    val takeover: Boolean = true,
+    val takeover: Boolean = false,
+    val simSlotIndex: Int = -1,
+    val simSubscriptionId: Int = -1,
+    val simCountryIso: String = "",
     /** Retain the role on switch-off instead of returning to the saved dialer. */
     val keepDefaultDialer: Boolean = false,
     /** Mute local call output while bridged. Telecom manages microphone mute independently. */
@@ -69,7 +72,10 @@ class SettingsStore(context: Context) {
     private val prefs = context.getSharedPreferences("gateway", Context.MODE_PRIVATE)
 
     fun load(): GatewaySettings = GatewaySettings(
-        takeover = prefs.getBoolean("takeover", true),
+        takeover = prefs.getBoolean("takeover", false),
+        simSlotIndex = prefs.getInt("sim_slot_index", -1),
+        simSubscriptionId = prefs.getInt("sim_subscription_id", -1),
+        simCountryIso = prefs.getString("sim_country_iso", "").orEmpty(),
         keepDefaultDialer = prefs.getBoolean("keep_default_dialer", false),
         muteEarpiece = prefs.getBoolean("mute_earpiece", true),
         server = prefs.getString("server", "")!!,
@@ -93,6 +99,9 @@ class SettingsStore(context: Context) {
     fun save(s: GatewaySettings) {
         prefs.edit()
             .putBoolean("takeover", s.takeover)
+            .putInt("sim_slot_index", s.simSlotIndex)
+            .putInt("sim_subscription_id", s.simSubscriptionId)
+            .putString("sim_country_iso", s.simCountryIso)
             .putBoolean("keep_default_dialer", s.keepDefaultDialer)
             .putBoolean("mute_earpiece", s.muteEarpiece)
             .putString("server", s.server.trim())

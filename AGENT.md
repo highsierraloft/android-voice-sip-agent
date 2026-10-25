@@ -1,5 +1,14 @@
 # AGENT.md
 
+## Fork boundary
+
+The app variant requires the pinned subscription for outgoing and incoming calls.
+Incoming calls are offered to the private PBX; only its acceptance answers the handset.
+Before answer, setup failure releases the call to the native dialer without rejection.
+Never fall back to the default SIM or take ownership of another subscription.
+Keep code, setup steps, verification status, and recovery documentation aligned.
+Machine-specific SIM identities and credentials belong outside the repository.
+
 This file provides guidance to coding agents (Claude Code etc.) when working with code in this repository.
 Machine-specific notes (devices, PBX hosts, current configuration) belong in the git-ignored `CLAUDE.local.md`.
 
