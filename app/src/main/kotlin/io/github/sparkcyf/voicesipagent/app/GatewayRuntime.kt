@@ -136,7 +136,7 @@ class GatewayRuntime private constructor(context: Context) {
         audioOpener,
         logger = { AppLog.i(it) },
         simPolicy = { io.github.sparkcyf.voicesipagent.telephony.SimPolicy(
-            settings.simSlotIndex, settings.simSubscriptionId, settings.simCountryIso, allowIncoming = false) },
+            settings.simSlotIndex, settings.simSubscriptionId, settings.simCountryIso, allowIncoming = true) },
     )
     /** [SipUserAgent] or [PjsipEndpoint], per [GatewaySettings.sipStack]. */
     private var sip: CallEndpoint? = null
@@ -854,6 +854,7 @@ class GatewayRuntime private constructor(context: Context) {
                 cellularInboundTarget = inboundTarget,
                 busyPolicy = s.busyPolicy,
                 allowedDialPrefixes = s.allowedPrefixes.split(',').map { it.trim() }.filter { it.isNotEmpty() },
+                inboundMediaReadyDigit = if (loopback) null else 'D',
             ),
             dialPolicyForA = { n -> when {
                 !_health.value.cellularReady -> HangupCause.UNAVAILABLE
@@ -1031,7 +1032,7 @@ class GatewayRuntime private constructor(context: Context) {
             " audioReady=${h.audioReady} tap=${if (audio.active) audio.backend else "idle"}" +
             " earpiece_mute=${onOff(settings.muteEarpiece)} loopback=${onOff(h.loopbackTest)}" +
             " calls=${h.calls.summary}" + (if (h.settingsPending) " settingsPending" else "") +
-            " sim_slot=${settings.simSlotIndex + 1} sim_pinned=${settings.simSubscriptionId >= 0} incoming=off"
+            " sim_slot=${settings.simSlotIndex + 1} sim_pinned=${settings.simSubscriptionId >= 0} incoming=selected-only inbound_contract=2"
     }
 
     /** Saved or queued selections (not a verified audio route), never the password itself. */
@@ -1043,7 +1044,7 @@ class GatewayRuntime private constructor(context: Context) {
             " prefixes=${s.allowedPrefixes.ifEmpty { "(any)" }}" +
             " audio_method=${s.audioMethod}:${audioMethodName(s.audioMethod)} call_access=${s.callAccess}" +
             " earpiece_mute=${onOff(s.muteEarpiece)} hold_sip=${onOff(s.holdSipWhenNotReady)} sip_debug=${onOff(s.sipDebugLog)}" +
-            " sim_slot=${s.simSlotIndex + 1} sim_pinned=${s.simSubscriptionId >= 0} incoming=off" +
+            " sim_slot=${s.simSlotIndex + 1} sim_pinned=${s.simSubscriptionId >= 0} incoming=selected-only inbound_contract=2" +
             (if (pendingSettings != null) " (applies after current calls end)" else "")
     }
 

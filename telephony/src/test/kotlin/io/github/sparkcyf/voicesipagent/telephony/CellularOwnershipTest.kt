@@ -110,8 +110,76 @@ class CellularOwnershipTest {
     }
 
     private fun drainMain() { while (mainTasks.isNotEmpty()) mainTasks.removeFirst().run() }
-    private fun active() { endpoint.onCallAdded(service, call); state(call, Call.STATE_ACTIVE) }
+    private fun active() { endpoint.onCallAdded(service, call); leg.answer(); drainMain(); state(call, Call.STATE_ACTIVE) }
     private fun open() { audioTasks.removeFirst().run(); drainMain() }
+
+    @Test fun manualAnswerDuringSipPreparationReleasesOwnershipWithoutTappingOrHangingUp() {
+        endpoint.onCallAdded(service, call)
+        state(call, Call.STATE_ACTIVE)
+        assertEquals(LegState.ENDED, leg.state)
+        assertTrue(audioTasks.isEmpty())
+        verify(call, never()).answer(anyInt())
+        verify(call, never()).disconnect()
+        verify(call, never()).reject(anyBoolean(), any())
+        verify(service, never()).setMuted(anyBoolean())
+    }
+
+    @Test fun preAnswerFailureLeavesTheNativePhoneRinging() {
+        endpoint.onCallAdded(service, call)
+        leg.releaseUnanswered(HangupCause.UNAVAILABLE)
+        drainMain()
+        assertEquals(LegState.ENDED, leg.state)
+        verify(call, never()).answer(anyInt())
+        verify(call, never()).reject(anyBoolean(), any())
+        verify(call, never()).disconnect()
+        verify(service, never()).setMuted(anyBoolean())
+    }
+
+    @Test fun readinessLossBeforeAnswerLeavesTheNativePhoneRinging() {
+        endpoint.onCallAdded(service, call)
+        endpoint.setReadiness(false, "SIP unavailable")
+        drainMain()
+        assertEquals(LegState.ENDED, leg.state)
+        verify(call, never()).reject(anyBoolean(), any())
+        verify(call, never()).disconnect()
+    }
+
+    @Test fun aWaitingIncomingCallNeverInterruptsTheExistingConversation() {
+        active(); open()
+        val first = leg
+        val waiting = makeCall(Call.STATE_RINGING)
+        endpoint.onCallAdded(service, waiting)
+        drainMain()
+        assertEquals(LegState.CONNECTED, first.state)
+        assertEquals(0, opened!!.closes)
+        verify(call, never()).disconnect()
+        verify(waiting, never()).answer(anyInt())
+        verify(waiting, never()).reject(anyBoolean(), any())
+        verify(waiting, never()).disconnect()
+    }
+
+    @Test fun selectedOnlyInboundNeverTakesTheProtectedSim() {
+        simPolicy = SimPolicy(0, 42, "es", allowIncoming = true)
+        endpoint.onCallAdded(service, call)
+        state(call, Call.STATE_ACTIVE)
+        assertFalse(this::leg.isInitialized)
+        verify(call, never()).answer(anyInt())
+        verify(call, never()).reject(anyBoolean(), any())
+        verify(call, never()).disconnect()
+        verify(service, never()).setMuted(anyBoolean())
+    }
+
+    @Test fun selectedInboundAnswersOnlyAfterExplicitGatewayAcceptance() {
+        simPolicy = SimPolicy(0, 42, "es", allowIncoming = true)
+        val details = call.details
+        doReturn(selectedSimAccount).`when`(details).accountHandle
+        endpoint.onCallAdded(service, call)
+        verify(call, never()).answer(anyInt())
+        leg.answer(); drainMain()
+        verify(call).answer(anyInt())
+        state(call, Call.STATE_ACTIVE)
+        assertEquals(1, audioTasks.size)
+    }
 
     @Test fun simPolicyLeavesIncomingCallsAndTheirAudioUntouched() {
         simPolicy = SimPolicy(1, 42, "es", allowIncoming = false)

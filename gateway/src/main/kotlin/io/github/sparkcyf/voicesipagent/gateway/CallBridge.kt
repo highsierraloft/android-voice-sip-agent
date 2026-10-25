@@ -32,6 +32,7 @@ class BridgeSession internal constructor(
         internal set
     internal var answerTimer: ScheduledFuture<*>? = null
     internal var inboundAnswerRequested = false
+    internal var mediaReadySent = false
     internal var mediaTimer: ScheduledFuture<*>? = null
 
     override fun toString() =
@@ -114,21 +115,22 @@ class CallBridge(
     private fun postIncoming(leg: CallLeg, block: () -> Unit) {
         // An endpoint may have captured this handler before stop removed it.
         if (stopping.get() || !post {
-            if (stopping.get()) leg.hangup(HangupCause.UNAVAILABLE) else block()
-        }) leg.hangup(HangupCause.UNAVAILABLE)
+            if (stopping.get()) leg.releaseUnanswered(HangupCause.UNAVAILABLE) else block()
+        }) leg.releaseUnanswered(HangupCause.UNAVAILABLE)
     }
 
     private fun onInbound(leg: CallLeg, from: CallEndpoint, to: CallEndpoint, route: RouteTarget) {
         val busy = session
         if (busy != null) {
             log("busy with $busy; ${config.busyPolicy} new ${from.name} call")
-            if (config.busyPolicy == BusyPolicy.REJECT || from === sideB) leg.hangup(HangupCause.BUSY)
+            if (leg.kind == "cellular") leg.releaseUnanswered(HangupCause.BUSY)
+            else if (config.busyPolicy == BusyPolicy.REJECT || from === sideB) leg.hangup(HangupCause.BUSY)
             return
         }
         val target = route.targetFor(leg)
         if (target.isNullOrEmpty()) {
             log("no route for ${from.name} call to ${redactNumber(leg.target)}")
-            leg.hangup(HangupCause.NOT_FOUND)
+            leg.releaseUnanswered(HangupCause.NOT_FOUND)
             return
         }
         if (to === sideA) {
@@ -213,6 +215,12 @@ class CallBridge(
                 s.media = MediaBridge(ma, mb).also { it.start() }
                 s.mediaTimer?.cancel(false)
                 log("$s: media bridged")
+                if (a.kind == "cellular" && !s.mediaReadySent) {
+                    config.inboundMediaReadyDigit?.let { digit ->
+                        s.mediaReadySent = true
+                        b.sendDtmf(digit)
+                    }
+                }
             } else if (s.media != null && (ma == null || mb == null)) {
                 s.media?.stop()
                 s.media = null
@@ -228,7 +236,10 @@ class CallBridge(
         s.mediaTimer?.cancel(false)
         s.media?.stop()
         s.media = null
-        if (s.inbound.state != LegState.ENDED) s.inbound.hangup(cause)
+        if (s.inbound.state != LegState.ENDED) {
+            if (s.inbound.kind == "cellular" && s.connectedAtMs == null) s.inbound.releaseUnanswered(cause)
+            else s.inbound.hangup(cause)
+        }
         s.outbound?.let { if (it.state != LegState.ENDED) it.hangup(if (cause == HangupCause.CANCELLED) HangupCause.CANCELLED else cause) }
         log("$s ended: $cause")
         notifyChanged(s)

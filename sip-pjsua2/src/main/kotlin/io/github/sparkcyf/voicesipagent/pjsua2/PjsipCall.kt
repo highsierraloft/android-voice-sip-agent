@@ -53,10 +53,13 @@ internal class PjsipCall(
         val acc = owner.account ?: return endNow(HangupCause.UNAVAILABLE, "no account")
         val c = GwCall(acc)
         val prm = CallOpParam(true)
-        val display = (caller.displayName ?: caller.number ?: owner.config.displayName)?.replace("\"", "")
-        if (display != null) prm.txOption.localUri = "\"$display\" <${owner.aor}>"
-        caller.number?.let { n ->
+        val display = (caller.displayName ?: caller.number ?: "Unknown caller")
+            .replace(Regex("[\\r\\n<>\\\"]"), "").take(160)
+        prm.txOption.localUri = "\"$display\" <${owner.aor}>"
+        caller.number?.takeIf { it.matches(Regex("[+0-9 ()-]{1,40}")) }?.let { n ->
             prm.txOption.headers.add(SipHeader().apply { hName = "P-Asserted-Identity"; hValue = "<${owner.uriFor(n)}>" })
+        } ?: run {
+            prm.txOption.headers.add(SipHeader().apply { hName = "Privacy"; hValue = "id" })
         }
         try {
             c.makeCall(owner.uriFor(target), prm)

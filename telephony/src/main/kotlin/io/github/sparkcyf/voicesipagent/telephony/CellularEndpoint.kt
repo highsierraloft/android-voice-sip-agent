@@ -268,7 +268,11 @@ class CellularEndpoint(
 
     internal fun canTap(leg: CellularLeg): Boolean = !closed && !leg.stopping && status.ready && service != null &&
         leg.call?.let { legs[it] === leg && it.telecomState == Call.STATE_ACTIVE && isCellular(it) } == true &&
-        observed.keys.count { it.telecomState != Call.STATE_DISCONNECTED } == 1
+        observed.keys.count { affectsAudioRouting(it) } == 1
+
+    /** An unanswered waiting call does not replace the current modem conversation. */
+    private fun affectsAudioRouting(call: Call): Boolean =
+        call.telecomState != Call.STATE_DISCONNECTED && call.telecomState != Call.STATE_RINGING
 
     internal fun acquireMute(leg: CellularLeg): Boolean {
         if (!canTap(leg)) return false
@@ -281,7 +285,7 @@ class CellularEndpoint(
     }
 
     private fun reconcileCalls() {
-        if (observed.keys.count { it.telecomState != Call.STATE_DISCONNECTED } > 1) {
+        if (observed.keys.count { affectsAudioRouting(it) } > 1) {
             legs.values.toList().forEach { it.abortAudio("additional call makes telephony routing unsafe") }
         }
         legs.values.toList().filter { it.call?.let(::isCellular) != true }.forEach {

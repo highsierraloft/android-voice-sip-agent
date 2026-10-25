@@ -30,6 +30,7 @@ class CellularLeg internal constructor(
     @Volatile internal var call: Call? = null
         private set
     @Volatile private var hangupRequested: HangupCause? = null
+    @Volatile private var gatewayAnswerRequested = false
     private val audio = AudioLease { endpoint.log("cell $id audio close failed: ${it.javaClass.simpleName}") }
     internal val stopping: Boolean get() = hangupRequested != null || state == LegState.ENDED
     private var audioAttempt = 0
@@ -62,6 +63,11 @@ class CellularLeg internal constructor(
             Call.STATE_NEW, Call.STATE_CONNECTING, Call.STATE_DIALING, Call.STATE_RINGING,
             Call.STATE_SELECT_PHONE_ACCOUNT, Call.STATE_PULLING_CALL -> transition(LegState.PROCEEDING)
             Call.STATE_ACTIVE -> {
+                if (direction == LegDirection.INBOUND && !gatewayAnswerRequested) {
+                    // Someone answered in the native dialer while SIP was still preparing.
+                    releaseToNative(HangupCause.CANCELLED)
+                    return
+                }
                 if (transition(LegState.CONNECTED)) {
                     endpoint.log("cell $id active")
                     if (!endpoint.canTap(this)) return abortAudio("call no longer eligible")
@@ -124,6 +130,10 @@ class CellularLeg internal constructor(
 
     internal fun abortAudio(reason: String) {
         if (stopping) return
+        if (direction == LegDirection.INBOUND && !gatewayAnswerRequested) {
+            releaseToNative(HangupCause.UNAVAILABLE)
+            return
+        }
         endpoint.log("cell $id stopping: $reason")
         hangupRequested = HangupCause.NETWORK_ERROR
         stopMedia()
@@ -133,6 +143,10 @@ class CellularLeg internal constructor(
 
     internal fun onServiceLost(reason: String) {
         if (state == LegState.ENDED) return
+        if (direction == LegDirection.INBOUND && !gatewayAnswerRequested) {
+            releaseToNative(HangupCause.UNAVAILABLE)
+            return
+        }
         endpoint.log("cell $id stopping: $reason")
         val cause = hangupRequested ?: HangupCause.NETWORK_ERROR
         hangupRequested = cause
@@ -148,7 +162,9 @@ class CellularLeg internal constructor(
         runCatching { endpoint.releaseMute(this) }.onFailure { endpoint.log("cell $id mute restore failed") }
         dtmfQueue.clear()
         dtmfPlaying = false
-        call?.let { runCatching { it.stopDtmfTone() } }
+        if (direction == LegDirection.OUTBOUND || gatewayAnswerRequested) {
+            call?.let { runCatching { it.stopDtmfTone() } }
+        }
     }
 
     private fun finish(cause: HangupCause) {
@@ -189,8 +205,26 @@ class CellularLeg internal constructor(
         main.post {
             if (stopping || !endpoint.owns(this)) return@post
             val c = call ?: return@post
-            if (c.telecomState == Call.STATE_RINGING) c.answer(VideoProfile.STATE_AUDIO_ONLY)
+            if (c.telecomState == Call.STATE_RINGING) {
+                gatewayAnswerRequested = true
+                c.answer(VideoProfile.STATE_AUDIO_ONLY)
+            } else if (!gatewayAnswerRequested) {
+                releaseToNative(HangupCause.CANCELLED)
+            }
         }
+    }
+
+    override fun releaseUnanswered(cause: HangupCause) {
+        main.post {
+            if (direction == LegDirection.INBOUND && !gatewayAnswerRequested) releaseToNative(cause)
+            else hangup(cause)
+        }
+    }
+
+    private fun releaseToNative(cause: HangupCause) {
+        if (state == LegState.ENDED) return
+        endpoint.log("cell $id released to the native dialer before gateway answer")
+        finish(cause)
     }
 
     override fun hangup(cause: HangupCause) {
